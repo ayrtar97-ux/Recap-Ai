@@ -3,9 +3,12 @@ name: Story Cut
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Release tag with uploaded video (direct upload method). Leave empty to use link"
+        default: ""
       video_url:
-        description: "Video link (YouTube / direct / Google Drive)"
-        required: true
+        description: "Video link (YouTube / direct / Google Drive) - used if release_tag is empty"
+        default: ""
       target_seconds:
         description: "Target length in seconds (120-180)"
         default: "150"
@@ -24,15 +27,20 @@ jobs:
       - name: Install
         run: pip install google-genai yt-dlp gdown
 
-      - name: Download video
+      - name: Get video
         env:
           VIDEO_URL: ${{ inputs.video_url }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$VIDEO_URL" == *drive.google.com* ]]; then
+          if [ -n "$RELEASE_TAG" ]; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.mp4" --pattern "*.mov" --pattern "*.mkv" --output input.mp4
+          elif [[ "$VIDEO_URL" == *drive.google.com* ]]; then
             gdown --fuzzy "$VIDEO_URL" -O input.mp4
           else
             yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o input.mp4 "$VIDEO_URL"
           fi
+          ls -lh input.mp4
 
       - name: Make story cut
         env:
