@@ -25,7 +25,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install
-        run: pip install google-genai yt-dlp gdown
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install google-genai yt-dlp gdown
 
       - name: Get video
         env:
