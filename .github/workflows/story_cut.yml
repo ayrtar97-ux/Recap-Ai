@@ -1,0 +1,49 @@
+name: Story Cut
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video link (YouTube / direct / Google Drive)"
+        required: true
+      target_seconds:
+        description: "Target length in seconds (120-180)"
+        default: "150"
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install google-genai yt-dlp gdown
+
+      - name: Download video
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+        run: |
+          if [[ "$VIDEO_URL" == *drive.google.com* ]]; then
+            gdown --fuzzy "$VIDEO_URL" -O input.mp4
+          else
+            yt-dlp -f "bv*+ba/b" --merge-output-format mp4 -o input.mp4 "$VIDEO_URL"
+          fi
+
+      - name: Make story cut
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TARGET_SECONDS: ${{ inputs.target_seconds }}
+        run: python story_cut.py input.mp4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: story-cut
+          path: |
+            output/story_cut.mp4
+            work/transcript.json
+            work/selection.json
