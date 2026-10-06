@@ -32,6 +32,13 @@ jobs:
         timeout-minutes: 5
         run: pip install google-genai yt-dlp gdown
 
+      - name: Restore transcript cache
+        if: inputs.release_tag != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: work/transcript.json
+          key: transcript-${{ inputs.release_tag }}
+
       - name: Get video
         env:
           VIDEO_URL: ${{ inputs.video_url }}
@@ -53,7 +60,15 @@ jobs:
           TARGET_SECONDS: ${{ inputs.target_seconds }}
         run: python story_cut.py input.mp4
 
+      - name: Save transcript cache
+        if: always() && inputs.release_tag != ''
+        uses: actions/cache/save@v4
+        with:
+          path: work/transcript.json
+          key: transcript-${{ inputs.release_tag }}
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: story-cut
           path: |
