@@ -66,14 +66,20 @@ TRANSCRIBE_PROMPT = (
 )
 
 
+def ensure_audio():
+    audio = WORK / "audio.mp3"
+    if not audio.exists():
+        run(["ffmpeg", "-y", "-i", VIDEO, "-vn", "-ac", "1", "-ar", "16000",
+             "-b:a", "32k", str(audio)], stdout=DEVNULL, stderr=DEVNULL)
+    return audio
+
+
 def transcribe():
     cache = WORK / "transcript.json"
     if cache.exists():
         return json.loads(cache.read_text())
 
-    audio = WORK / "audio.mp3"
-    run(["ffmpeg", "-y", "-i", VIDEO, "-vn", "-ac", "1", "-ar", "16000",
-         "-b:a", "32k", str(audio)], stdout=DEVNULL, stderr=DEVNULL)
+    audio = ensure_audio()
     total = duration(audio)
 
     segs = []
@@ -109,10 +115,10 @@ def select(segs):
 
     listing = "\n".join(
         f'{s["id"]}|{s["start"]:.1f}-{s["end"]:.1f}|{s["text"]}' for s in segs)
-    prompt = f"""You are editing a movie recap into a viral short video.
+    base = f"""You are editing a movie recap into a viral short video.
 Below is the full Burmese narration, one line per segment: id|start-end seconds|text
 
-Pick segments so the total duration is about {TARGET} seconds (within +/-15s).
+Pick segments so the TOTAL duration (sum of end-start of every picked segment) is about {TARGET} seconds (within +/-15s).
 Rules:
 - Keep the ORIGINAL ORDER (ids ascending) so the story stays connected and makes sense.
 - The result must feel like a complete mini-story: hook, setup, conflict, climax, ending.
@@ -122,8 +128,19 @@ Rules:
 Return JSON: {{"ids": [list of segment ids]}}
 
 {listing}"""
-    data = ask([prompt])
-    ids = sorted({int(i) for i in data["ids"] if 0 <= int(i) < len(segs)})
+
+    ids, note = [], ""
+    for attempt in range(4):
+        data = ask([base + note])
+        ids = sorted({int(i) for i in data["ids"] if 0 <= int(i) < len(segs)})
+        total = sum(segs[i]["end"] - segs[i]["start"] for i in ids)
+        print(f"selection attempt {attempt + 1}: {len(ids)} segments, {total:.0f}s")
+        if abs(total - TARGET) <= 20:
+            break
+        direction = "too short, add more segments" if total < TARGET else "too long, remove some segments"
+        note = (f"\n\nYour previous answer {ids} totals {total:.0f}s, which is {direction}. "
+                f"The total MUST be about {TARGET}s. Adjust the list (keep ascending order "
+                "and story flow) and answer again.")
     cache.write_text(json.dumps(ids))
     return ids
 
@@ -180,12 +197,15 @@ def render(ranges):
     for n, (s, e) in enumerate(ranges):
         d = e - s
         clip = WORK / f"clip{n:03d}.mp4"
-        run(["ffmpeg", "-y", "-ss", f"{s:.2f}", "-t", f"{d:.2f}", "-i", VIDEO,
+        r = subprocess.run(["ffmpeg", "-y", "-ss", f"{s:.2f}", "-t", f"{d:.2f}", "-i", VIDEO,
              "-filter_complex", vf, "-map", "[v]", "-map", "0:a:0",
              "-af", f"afade=t=in:d=0.04,afade=t=out:st={max(d - 0.04, 0):.2f}:d=0.04",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", "30",
              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", str(clip)],
-            stdout=DEVNULL, stderr=DEVNULL)
+            stdout=DEVNULL, stderr=subprocess.PIPE, text=True)
+        if r.returncode != 0:
+            print("FFMPEG ERROR:\n" + r.stderr[-2000:])
+            raise RuntimeError(f"ffmpeg failed on clip {n}")
         lines.append(f"file '{clip.name}'")
     listfile.write_text("\n".join(lines))
 
@@ -196,6 +216,7 @@ def render(ranges):
 
 
 if __name__ == "__main__":
+    ensure_audio()
     segments = transcribe()
     chosen = select(segments)
     cuts = build_ranges(segments, chosen)
