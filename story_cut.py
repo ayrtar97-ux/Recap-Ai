@@ -170,7 +170,7 @@ def render(ranges):
           "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];"
           "[b]scale=1080:-2[fg];"
           "[bg][fg]overlay=(W-w)/2:(H-h)/2")
-    if WATERMARK:
+    if WATERMARK and Path(FONT).exists():
         vf += (f",drawtext=text='{WATERMARK}':fontfile={FONT}:fontcolor=white@0.6:"
                "fontsize=38:x=w-tw-30:y=70")
     vf += "[v]"
