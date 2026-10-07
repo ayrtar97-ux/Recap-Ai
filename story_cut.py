@@ -16,9 +16,10 @@ from google.genai import types
 
 VIDEO = sys.argv[1]
 TARGET = int(os.environ.get("TARGET_SECONDS", "150"))
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")  # transcription
+SELECT_MODEL = os.environ.get("SELECT_MODEL", "gemini-2.5-flash-lite")  # story selection
 WATERMARK = os.environ.get("WATERMARK", "KK.Ent")
-CHUNK = 300  # seconds per transcription chunk (keeps timestamps accurate)
+CHUNK = 600  # seconds per transcription chunk (fewer API calls = saves free quota)
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 WORK = Path("work")
@@ -41,20 +42,36 @@ def duration(path):
     return float(out)
 
 
-def ask(parts, retries=5):
+def ask(parts, model, schema=None, retries=5):
     for i in range(retries):
         try:
+            cfg = dict(response_mime_type="application/json", temperature=0.2)
+            if schema:
+                cfg["response_schema"] = schema
             r = client.models.generate_content(
-                model=MODEL,
-                contents=parts,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json", temperature=0.2),
-            )
+                model=model, contents=parts,
+                config=types.GenerateContentConfig(**cfg))
             return json.loads(r.text)
-        except Exception as e:  # rate limit / bad JSON -> wait and retry
-            print(f"Gemini retry {i + 1}: {e}")
+        except Exception as e:
+            msg = str(e)
+            if "PerDay" in msg:  # daily quota gone: retrying only wastes time
+                raise SystemExit(f"Daily free quota exhausted for {model}. "
+                                 "Wait for the reset or change the model.")
+            print(f"Gemini retry {i + 1}: {msg[:300]}")
             time.sleep(15 * (i + 1))
     raise RuntimeError("Gemini failed after retries")
+
+
+TRANSCRIPT_SCHEMA = {
+    "type": "ARRAY",
+    "items": {"type": "OBJECT",
+              "properties": {"start": {"type": "NUMBER"}, "end": {"type": "NUMBER"},
+                             "text": {"type": "STRING"}},
+              "required": ["start", "end", "text"]},
+}
+IDS_SCHEMA = {"type": "OBJECT",
+              "properties": {"ids": {"type": "ARRAY", "items": {"type": "INTEGER"}}},
+              "required": ["ids"]}
 
 
 # ---------- 1. Transcribe Burmese narration (chunked) ----------
@@ -82,8 +99,14 @@ def transcribe():
     audio = ensure_audio()
     total = duration(audio)
 
+    trdir = WORK / "tr"
+    trdir.mkdir(exist_ok=True)
     segs = []
     for k, off in enumerate(range(0, int(total), CHUNK)):
+        cf = trdir / f"chunk{k}.json"
+        if cf.exists():  # already done in an earlier run
+            segs.extend(json.loads(cf.read_text()))
+            continue
         part = WORK / f"chunk{k}.mp3"
         run(["ffmpeg", "-y", "-ss", str(off), "-t", str(CHUNK), "-i", str(audio),
              "-c", "copy", str(part)], stdout=DEVNULL, stderr=DEVNULL)
@@ -91,14 +114,17 @@ def transcribe():
         while f.state.name == "PROCESSING":
             time.sleep(3)
             f = client.files.get(name=f.name)
-        data = ask([f, TRANSCRIBE_PROMPT])
+        data = ask([f, TRANSCRIBE_PROMPT], MODEL, TRANSCRIPT_SCHEMA)
+        new = []
         for d in data:
             s = max(0.0, float(d["start"]))
             e = min(float(d["end"]), CHUNK)
             if e > s and d.get("text", "").strip():
-                segs.append({"start": off + s, "end": off + e, "text": d["text"].strip()})
+                new.append({"start": off + s, "end": off + e, "text": d["text"].strip()})
+        cf.write_text(json.dumps(new, ensure_ascii=False))
+        segs.extend(new)
         print(f"chunk {k} done, {len(segs)} segments so far")
-        time.sleep(7)  # stay under free-tier rate limit
+        time.sleep(7)  # stay under free-tier per-minute limit
 
     segs.sort(key=lambda x: x["start"])
     for i, s in enumerate(segs):
@@ -131,7 +157,7 @@ Return JSON: {{"ids": [list of segment ids]}}
 
     ids, note = [], ""
     for attempt in range(4):
-        data = ask([base + note])
+        data = ask([base + note], SELECT_MODEL, IDS_SCHEMA)
         ids = sorted({int(i) for i in data["ids"] if 0 <= int(i) < len(segs)})
         total = sum(segs[i]["end"] - segs[i]["start"] for i in ids)
         print(f"selection attempt {attempt + 1}: {len(ids)} segments, {total:.0f}s")
