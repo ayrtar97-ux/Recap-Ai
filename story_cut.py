@@ -42,7 +42,7 @@ def duration(path):
     return float(out)
 
 
-def ask(parts, model, schema=None, retries=5):
+def ask(parts, model, schema=None, fallback=None, retries=5):
     for i in range(retries):
         try:
             cfg = dict(response_mime_type="application/json", temperature=0.2)
@@ -55,6 +55,9 @@ def ask(parts, model, schema=None, retries=5):
         except Exception as e:
             msg = str(e)
             if "PerDay" in msg:  # daily quota gone: retrying only wastes time
+                if fallback and fallback != model:
+                    print(f"{model} daily quota exhausted -> falling back to {fallback}")
+                    return ask(parts, fallback, schema)
                 raise SystemExit(f"Daily free quota exhausted for {model}. "
                                  "Wait for the reset or change the model.")
             print(f"Gemini retry {i + 1}: {msg[:300]}")
@@ -114,7 +117,7 @@ def transcribe():
         while f.state.name == "PROCESSING":
             time.sleep(3)
             f = client.files.get(name=f.name)
-        data = ask([f, TRANSCRIBE_PROMPT], MODEL, TRANSCRIPT_SCHEMA)
+        data = ask([f, TRANSCRIBE_PROMPT], MODEL, TRANSCRIPT_SCHEMA, fallback=SELECT_MODEL)
         new = []
         for d in data:
             s = max(0.0, float(d["start"]))
