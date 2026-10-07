@@ -9,6 +9,12 @@ on:
       video_url:
         description: "Video link (YouTube / direct / Google Drive) - used if release_tag is empty"
         default: ""
+      transcribe_model:
+        description: "Gemini model for Burmese transcription"
+        default: "gemini-2.5-flash"
+      select_model:
+        description: "Gemini model for story selection (separate daily quota)"
+        default: "gemini-2.5-flash-lite"
       target_seconds:
         description: "Target length in seconds (120-180)"
         default: "150"
@@ -36,8 +42,11 @@ jobs:
         if: inputs.release_tag != ''
         uses: actions/cache/restore@v4
         with:
-          path: work/transcript.json
-          key: transcript-${{ inputs.release_tag }}
+          path: |
+            work/tr
+            work/transcript.json
+          key: transcript-${{ inputs.release_tag }}-${{ github.run_id }}
+          restore-keys: transcript-${{ inputs.release_tag }}-
 
       - name: Get video
         env:
@@ -58,14 +67,18 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TARGET_SECONDS: ${{ inputs.target_seconds }}
+          GEMINI_MODEL: ${{ inputs.transcribe_model }}
+          SELECT_MODEL: ${{ inputs.select_model }}
         run: python story_cut.py input.mp4
 
       - name: Save transcript cache
         if: always() && inputs.release_tag != ''
         uses: actions/cache/save@v4
         with:
-          path: work/transcript.json
-          key: transcript-${{ inputs.release_tag }}
+          path: |
+            work/tr
+            work/transcript.json
+          key: transcript-${{ inputs.release_tag }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         if: always()
